@@ -29,6 +29,7 @@ export async function render(view) {
     { k: 'avg_cost', label: 'Avg cost', cls: 'num', f: (v) => money(v) },
     { k: 'price', label: 'Price', cls: 'num', f: (v, r) => (r.sellable ? money(v) : '—') },
     { k: 'lead_time_days', label: 'Lead time', cls: 'num', f: (v) => v + ' d' },
+    { k: 'lot_rule', label: 'Lot rule', f: (v, r) => (v === 'FOQ' ? `FOQ ${r.lot_size}` : 'L4L') },
     { k: 'rop_override', label: 'ROP', cls: 'num', f: (v) => (v != null ? `${num(v)} <span class="badge gray">manual</span>` : '<span class="muted">calculated</span>') },
     { k: 'id', label: 'BOM', f: (v) => (bomOf(v).length ? `${bomOf(v).length} parts` : '') },
   ], rows, { rowAttr: (r) => `class="click" data-it="${r.id}"` })}
@@ -64,6 +65,10 @@ function editItem(it = {}) {
       <label>Manual ROP override<input name="rop_override" type="number" min="0" value="${it.rop_override ?? ''}" placeholder="blank = calculated"></label>
       <label>Defect opportunities / unit<input name="defect_opportunities" type="number" min="1" value="${it.defect_opportunities ?? 1}"></label>
       <label class="chk" style="margin-top:24px"><input type="checkbox" name="auto_assemble" ${it.auto_assemble ? 'checked' : ''}> Kit at counter when sold</label></div>
+    <div class="row3">
+      <label>MRP lot rule<select name="lot_rule">${options([{ id: 'L4L', name: 'Lot for lot (L4L)' }, { id: 'FOQ', name: 'Fixed order quantity (FOQ)' }], it.lot_rule || 'L4L')}</select></label>
+      <label>FOQ quantity<input name="lot_size" type="number" min="1" value="${it.lot_size ?? ''}" placeholder="only for FOQ"></label>
+      <span></span></div>
     <label>Description<input name="description" value="${esc(it.description || '')}"></label>
     <h4 style="margin:12px 0 6px">Bill of material <span class="muted small">(made-in-house items only)</span></h4>
     <table class="tbl"><thead><tr><th>Component</th><th>Qty per unit</th><th></th></tr></thead><tbody id="bm-rows">${bomOf(it.id).map(bomRow).join('')}</tbody></table>
@@ -74,9 +79,10 @@ function editItem(it = {}) {
         sku: f.sku.trim().toUpperCase(), name: f.name.trim(), category: f.category.trim() || 'General', item_type: f.item_type,
         supplier_id: f.supplier_id ? Number(f.supplier_id) : null, unit_cost: Number(f.unit_cost) || 0, price: Number(f.price) || 0,
         lead_time_days: Number(f.lead_time_days) || 0, rop_override: f.rop_override === '' ? null : Number(f.rop_override),
-        defect_opportunities: Number(f.defect_opportunities) || 1, auto_assemble: f.auto_assemble, sellable: f.item_type !== 'component', description: f.description,
+        defect_opportunities: Number(f.defect_opportunities) || 1, lot_rule: f.lot_rule, lot_size: f.lot_size === '' ? null : Number(f.lot_size), auto_assemble: f.auto_assemble, sellable: f.item_type !== 'component', description: f.description,
       };
       if (!rec.sku || !rec.name) throw new Error('SKU and name are required');
+      if (rec.lot_rule === 'FOQ' && !(rec.lot_size > 0)) throw new Error('Enter the FOQ quantity');
       rec.barcode = f.barcode.trim() || ean13('08500261' + String(Date.now()).slice(-4));
       let id = it.id;
       if (isNew) {

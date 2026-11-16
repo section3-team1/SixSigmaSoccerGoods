@@ -1,5 +1,5 @@
 // Customer portal — coaches & players log in, see live availability by store, order for pickup.
-import { S, sb, sel, rpc, money, num, esc, act, options, table, badge, fdate, fdt, docNo, today, addDays, stores, item, loc, toast, $, bomOf } from '../lib.js';
+import { S, sb, sel, rpc, money, num, esc, act, options, table, badge, modal, fdate, fdt, docNo, today, addDays, stores, item, loc, toast, $, bomOf } from '../lib.js';
 
 const st = { view: 'shop', cat: 'All', cart: [], store: null, date: null };
 let root;
@@ -25,10 +25,22 @@ async function draw() {
   <div class="portal-top"><div class="logo">σ</div><b>SSSG Team Store</b>
     <nav><a href="javascript:void 0" data-v="shop" class="${st.view === 'shop' ? 'on' : ''}">Shop & availability</a>
     <a href="javascript:void 0" data-v="orders" class="${st.view === 'orders' ? 'on' : ''}">My orders</a></nav>
-    <span class="small">${esc(myCust[0]?.name || me.full_name || me.email)}</span><button class="btn sm" id="pt-out">Sign out</button></div>
+    <span class="small">${esc(myCust[0]?.name || me.full_name || me.email)}</span>
+    <button class="btn sm ghost" id="pt-staff" style="color:#c9d4e2;border-color:#3b5577">I'm an SSSG employee</button>
+    <button class="btn sm" id="pt-out">Sign out</button></div>
   <main class="view" id="pt-body"></main>`;
   root.querySelectorAll('[data-v]').forEach((a) => (a.onclick = () => { st.view = a.dataset.v; draw(); }));
   $('#pt-out', root).onclick = () => sb.auth.signOut();
+  $('#pt-staff', root).onclick = () => modal({
+    title: 'Switch to an employee account', okText: 'Switch',
+    body: `<p class="muted">Signed up as a customer by mistake? Enter the staff code from your manager.</p>
+      <label>Staff code<input name="code" autocomplete="off"></label>
+      <label>Role<select name="role"><option value="manager">Manager</option><option value="staff">Employee</option></select></label>`,
+    onOk: async (el) => {
+      await rpc('claim_staff', { p_code: el.querySelector('[name=code]').value, p_role: el.querySelector('[name=role]').value });
+      toast('Done! Loading the full ERP…'); setTimeout(() => location.reload(), 600);
+    },
+  });
   const body = $('#pt-body', root);
 
   if (st.view === 'orders') {
