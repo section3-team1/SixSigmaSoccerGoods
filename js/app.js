@@ -110,12 +110,12 @@ function renderLogin() {
     const f = Object.fromEntries(new FormData(form));
     try {
       if (mode === 'in') {
-        const { error } = await sb.auth.signInWithPassword({ email: f.email, password: f.password });
+        const { error } = await sb.auth.signInWithPassword({ email: f.email.trim(), password: f.password });
         if (error) throw error;
       } else {
         const meta = { full_name: f.full_name || f.email.split('@')[0] };
-        if (f.kind !== 'customer') { meta.staff_code = f.staff_code; meta.role = f.kind; }
-        const { data, error } = await sb.auth.signUp({ email: f.email, password: f.password, options: { data: meta } });
+        if (f.kind !== 'customer') { meta.staff_code = (f.staff_code || '').trim(); meta.role = f.kind; }
+        const { data, error } = await sb.auth.signUp({ email: f.email.trim(), password: f.password, options: { data: meta } });
         if (error) throw error;
         if (!data.session) toast('Account created. Check your email to confirm, then sign in.', 'ok', 7000);
       }
