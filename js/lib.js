@@ -326,3 +326,61 @@ export function formVals(el) {
   el.querySelectorAll('[name]').forEach((i) => (o[i.name] = i.type === 'checkbox' ? i.checked : i.value));
   return o;
 }
+
+// ---------- promotions: first-purchase spin wheel ----------
+// slice order must match wheel_slices() in the database: 5, 10, 15, 5, 10, 20
+export const WHEEL = [5, 10, 15, 5, 10, 20];
+const WHEEL_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#6250d6', '#e34948', '#eda100'];
+
+function wheelSvg() {
+  const r = 140, c = 150;
+  const pt = (deg, rad) => [c + rad * Math.sin((deg * Math.PI) / 180), c - rad * Math.cos((deg * Math.PI) / 180)];
+  return `<svg viewBox="0 0 300 300" class="wheel-svg"><g class="wheel-rot">${WHEEL.map((p, i) => {
+    const a0 = i * 60, a1 = a0 + 60, [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r), [tx, ty] = pt(a0 + 30, r * 0.62);
+    return `<path d="M${c},${c} L${x0},${y0} A${r},${r} 0 0 1 ${x1},${y1} Z" fill="${WHEEL_COLORS[i]}" stroke="#fff" stroke-width="3"/>
+      <text x="${tx}" y="${ty}" fill="#fff" font-size="26" font-weight="700" text-anchor="middle" dominant-baseline="middle"
+        transform="rotate(${a0 + 30} ${tx} ${ty})">${p}%</text>`;   // the winning slice always ends upright under the pointer
+  }).join('')}<circle cx="${c}" cy="${c}" r="26" fill="#0d1f33" stroke="#fff" stroke-width="4"/>
+  <text x="${c}" y="${c + 1}" fill="#34d399" font-size="24" font-family="Georgia" text-anchor="middle" dominant-baseline="middle">σ</text></g>
+  <polygon points="150,2 136,30 164,30" fill="#0d1f33" stroke="#fff" stroke-width="2"/></svg>`;
+}
+
+// opens the wheel, asks the database for the result (so it can't be gamed), then animates to it
+export function spinWheel(customerId, customerName, onDone) {
+  const m = modal({
+    title: '🎡 First-purchase spin', hideOk: true, cancelText: 'Close',
+    body: `<div class="wheel-wrap">${wheelSvg()}</div>
+      <p class="center muted" id="wheel-msg">${esc(customerName || 'Customer')}'s first purchase: spin for 5–20% off!</p>
+      <button class="btn primary block lg" id="wheel-go">Spin the wheel</button>`,
+  });
+  const g = m.el.querySelector('.wheel-rot');
+  const btn = m.el.querySelector('#wheel-go');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    let res;
+    try { res = await rpc('spin_wheel', { p_customer: customerId }); }
+    catch (err) { toast(esc(err.message), 'err', 6000); btn.disabled = false; return; }
+    const target = 360 * 6 + (360 - (res.slice * 60 + 30));   // land the slice's center under the pointer
+    g.style.transition = res.already ? 'transform .8s ease-out' : 'transform 4.2s cubic-bezier(.12,.67,.12,1)';
+    requestAnimationFrame(() => (g.style.transform = `rotate(${target}deg)`));
+    setTimeout(() => {
+      beep();
+      m.el.querySelector('#wheel-msg').innerHTML = res.already
+        ? `Already spun: <b>${res.pct}% off</b> the first purchase.`
+        : `🎉 <b style="font-size:20px">${res.pct}% off!</b><br>Applied automatically to this first purchase.`;
+      btn.textContent = 'Done';
+      btn.disabled = false;
+      btn.onclick = () => m.close();
+      onDone?.(res);
+    }, res.already ? 900 : 4400);
+  };
+  return m;
+}
+
+// small helper for loyalty progress dots
+export function loyaltyDots(st) {
+  if (!st) return '';
+  const done = st.purchases % st.every;
+  return `<span class="dots">${Array.from({ length: st.every }, (_, i) =>
+    `<i class="${i < done ? 'on' : ''} ${i === st.every - 1 ? 'star' : ''}"></i>`).join('')}</span>`;
+}
