@@ -1,11 +1,11 @@
 // Manager reports — sales by day/week, top sellers, low stock with order-by dates,
 // inventory by location, supplier lead-time performance, sales by store.
-import { S, sel, rpc, money, money0, num, pct, esc, table, badge, tabs, today, addDays, fdate, chart, COLORS, $, item, loc } from '../lib.js';
+import { S, sel, rpc, money, money0, num, pct, esc, table, badge, tabs, today, addDays, fdate, chart, COLORS, $, item, loc, setting, kpi, WHEEL } from '../lib.js';
 
 const st = { tab: 'sales', grain: 'day', from: addDays(today(), -29), to: today() };
 
 export async function render(view) {
-  view.innerHTML = `${tabs('rp', [['sales', 'Sales'], ['top', 'Top sellers'], ['low', 'Low stock & reorder'], ['loc', 'Inventory by location'], ['sup', 'Supplier performance']], st.tab)}
+  view.innerHTML = `${tabs('rp', [['sales', 'Sales'], ['top', 'Top sellers'], ['low', 'Low stock & reorder'], ['loc', 'Inventory by location'], ['sup', 'Supplier performance'], ['promo', 'Promotions']], st.tab)}
   <div class="toolbar" id="rp-range">
     <label style="margin:0">From<input type="date" id="rp-from" value="${st.from}"></label>
     <label style="margin:0">To<input type="date" id="rp-to" value="${st.to}"></label>
@@ -17,7 +17,7 @@ export async function render(view) {
   view.querySelectorAll('[data-d]').forEach((b) => (b.onclick = () => { st.from = addDays(today(), -(Number(b.dataset.d) - 1)); st.to = today(); render(view); }));
   if (['low', 'loc'].includes(st.tab)) $('#rp-range', view).classList.add('hidden');
   const body = $('#rp-body', view);
-  await ({ sales, top, low, locs, sup })[{ sales: 'sales', top: 'top', low: 'low', loc: 'locs', sup: 'sup' }[st.tab]](body);
+  await ({ sales, top, low, locs, sup, promos })[{ sales: 'sales', top: 'top', low: 'low', loc: 'locs', sup: 'sup', promo: 'promos' }[st.tab]](body);
 }
 
 async function sales(body) {
@@ -134,4 +134,70 @@ async function sup(body) {
     { k: 'on_time', label: '', f: (v) => (v ? badge('on time', 'green') : badge('late', 'red')) },
     { k: 'qty_received', label: 'Fill', cls: 'num', f: (v, r) => pct(v / r.qty_ordered, 0) },
   ], pos)}</div></div>`;
+}
+
+// Promotions: what the wheel + loyalty program costs, and what it brings back
+async function promos(body) {
+  if (!st.promoInit) { st.promoInit = true; st.from = addDays(today(), -181); st.to = today(); $('#rp-from').value = st.from; $('#rp-to').value = st.to; }
+  const r = await rpc('promo_report', { p_from: st.from, p_to: st.to });
+  const cost = Number(r.wheel_cost) + Number(r.loyalty_cost);
+  const every = setting('loyalty_every'), lp = setting('loyalty_pct');
+  const lift = r.walkin_avg_ticket ? r.member_avg_ticket / r.walkin_avg_ticket - 1 : null;
+  const gpAfter = Number(r.gross_profit);                 // promo discounts are already netted out of revenue
+  const counts = Object.fromEntries((r.spins || []).map((x) => [Number(x.pct), Number(x.n)]));
+  const pcts = [...new Set(WHEEL)].sort((a, b) => a - b);
+  const expShare = (p) => WHEEL.filter((x) => x === p).length / WHEEL.length;
+  const avgSpin = r.spins_total ? pcts.reduce((a, p) => a + p * (counts[p] || 0), 0) / r.spins_total : null;
+  const expAvg = WHEEL.reduce((a, b) => a + b, 0) / WHEEL.length;
+
+  body.innerHTML = `
+  <div class="kpis">
+    ${kpi('Promotion cost', money0(cost), `${pct(r.net_sales ? cost / r.net_sales : null)} of net sales`, 'warn')}
+    ${kpi('Wheel spins', num(r.spins_total), `avg ${num(avgSpin, 1)}% off (expected ${num(expAvg, 1)}%)`)}
+    ${kpi('Loyalty rewards', num(r.loyalty_count), `${num(lp)}% off every ${every}th purchase`)}
+    ${kpi('Repeat customers', pct(r.members ? r.repeat_members / r.members : null, 0), `${num(r.repeat_members)} of ${num(r.members)} members bought again`, 'good')}
+    ${kpi('Purchases per member', num(r.avg_purchases, 1), r.avg_days_between ? `one every ${num(r.avg_days_between, 0)} days` : '')}
+    ${kpi('Member vs walk-in ticket (in store)', `${money(r.member_avg_ticket)}`, lift != null ? `${lift >= 0 ? '+' : ''}${pct(lift, 0)} vs ${money(r.walkin_avg_ticket)} walk-in` : '')}
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3>What the program costs <span class="r muted small">${fdate(st.from)} – ${fdate(st.to)}</span></h3>
+      ${table([
+        { k: 'p', label: 'Program' },
+        { k: 'n', label: 'Times used', cls: 'num', f: (v) => num(v) },
+        { k: 'c', label: 'Discount given', cls: 'num', f: (v) => money(v) },
+        { k: 'a', label: 'Avg per use', cls: 'num', f: (v, x) => money(x.n ? x.c / x.n : 0) },
+      ], [
+        { p: '🎡 First-purchase wheel', n: Number(r.wheel_count), c: Number(r.wheel_cost) },
+        { p: `⭐ Every-${every}th loyalty (${num(lp)}%)`, n: Number(r.loyalty_count), c: Number(r.loyalty_cost) },
+      ], { foot: `<tfoot><tr><td>Total</td><td class="num">${num(Number(r.wheel_count) + Number(r.loyalty_count))}</td><td class="num">${money(cost)}</td><td></td></tr></tfoot>` })}
+      <div class="formula" style="margin-top:12px">
+        Effective loyalty cost = ${num(lp)}% ÷ ${every} purchases ≈ ${num(lp / every, 1)}% of a member's spend<br>
+        Actual: ${money(r.loyalty_cost)} loyalty discounts ÷ ${money(r.member_sales)} member sales = <b>${pct(r.member_sales ? r.loyalty_cost / r.member_sales : null)}</b><br>
+        Gross profit in period (after all discounts): <b>${money(gpAfter)}</b> · promotions = ${pct(gpAfter ? cost / gpAfter : null)} of gross profit</div>
+    </div>
+    <div class="card"><h3>Wheel results: actual vs. expected</h3>
+      <div class="chart-box"><canvas id="pr-wheel"></canvas></div>
+      <p class="muted small">The wheel has 6 slices: two 5%, two 10%, one 15%, one 20%, so each spin should average ${num(expAvg, 1)}%. The database picks the slice (not the browser), so cashiers can't re-spin for a better result.</p>
+    </div>
+  </div>
+  <div class="card"><h3>Most loyal customers <span class="r muted small">all-time purchases</span></h3>${table([
+    { k: 'name', label: 'Customer', f: (v) => `<b>${esc(v)}</b>` },
+    { k: 'purchases', label: 'Purchases', cls: 'num', f: (v) => num(v) },
+    { k: 'spent', label: 'Spent (net)', cls: 'num', f: (v) => money(v) },
+    { k: 'saved', label: 'Rewards received', cls: 'num', f: (v) => money(v) },
+    { k: 'last_purchase', label: 'Last purchase', f: (v) => fdate(v) },
+    { k: 'until_reward', label: `Next ${num(lp)}% reward`, f: (v) => (v === 0 ? badge('next purchase!', 'violet') : `in ${v} purchase${v === 1 ? '' : 's'}`) },
+  ], r.top || [], { empty: 'No member purchases yet' })}
+  <p class="muted small">Pick one of these customers at the Point of Sale to see the reward applied live. "Next purchase!" customers get ${num(lp)}% off automatically.</p></div>
+  <div class="note"><b>How to read this as a manager:</b> the program is worth keeping if members come back more often and spend more per visit than walk-ins, and the discount stays a small share of gross profit.
+    Change the reward in <a href="#/settings">Settings → Promotions</a> (e.g. 30% → 20%, or every 6th → every 8th) and every number here recalculates.</div>`;
+
+  chart($('#pr-wheel', body), {
+    type: 'bar',
+    data: { labels: pcts.map((p) => p + '% off'), datasets: [
+      { label: 'Actual spins', data: pcts.map((p) => counts[p] || 0), backgroundColor: COLORS.s1, borderRadius: 4, maxBarThickness: 34 },
+      { label: 'Expected', data: pcts.map((p) => Math.round(expShare(p) * r.spins_total * 10) / 10), backgroundColor: COLORS.s2, borderRadius: 4, maxBarThickness: 34 },
+    ] },
+    options: { scales: { x: { grid: { display: false } }, y: { grid: { color: COLORS.grid }, ticks: { precision: 0 }, title: { display: true, text: 'spins' } } } },
+  });
 }

@@ -1,8 +1,9 @@
 // Point of Sale — scan or tap items, discounts, tax, receipt.
-// Completing a sale calls post_sale(): reduces inventory, records revenue + COGS.
+// Completing a sale calls post_sale(): reduces inventory, records revenue + COGS,
+// and applies promotions (first-purchase wheel / every-6th-purchase loyalty reward).
 import {
   S, sel, rpc, money, num, esc, toast, act, options, stores, locLabel, itemByCode, item, setting,
-  scanField, cameraScan, beep, modal, printDoc, docNo, fdt, cust, refresh, $, bomOf,
+  scanField, cameraScan, beep, modal, printDoc, docNo, fdt, cust, refresh, $, bomOf, spinWheel, loyaltyDots,
 } from '../lib.js';
 
 // kept between re-renders so live updates never wipe the cart
@@ -10,7 +11,10 @@ const st = { loc: null, customer: '', cat: 'All', search: '', cart: [], orderDis
 
 export async function render(view) {
   if (!st.loc) st.loc = stores()[0]?.id;
-  const inv = await sel('inventory', 'item_id,qty', (q) => q.eq('location_id', st.loc));
+  const [inv, promo] = await Promise.all([
+    sel('inventory', 'item_id,qty', (q) => q.eq('location_id', st.loc)),
+    st.customer ? rpc('promo_status', { p_customer: Number(st.customer) }) : Promise.resolve(null),
+  ]);
   const oh = Object.fromEntries(inv.map((r) => [r.item_id, Number(r.qty)]));
   // bundles can be kitted at the counter: how many could we build right now?
   const buildable = (it) => {
@@ -26,15 +30,32 @@ export async function render(view) {
     (st.cat === 'All' || i.category === st.cat) &&
     (!st.search || (i.name + ' ' + i.sku).toLowerCase().includes(st.search.toLowerCase())));
 
+  // promotion that will apply to THIS sale (the database applies the same rule when the sale posts)
+  const promoPct = promo ? (promo.loyalty_next ? Number(promo.loyalty_pct) : promo.first && promo.spin_pct ? Number(promo.spin_pct) : 0) : 0;
+  const promoName = promo?.loyalty_next ? 'Loyalty reward' : 'Wheel reward';
+  const orderPct = Math.max(st.orderDisc, promoPct);
+  const promoWins = promoPct > 0 && promoPct >= st.orderDisc;
+
   const taxRate = setting('tax_rate');
   const lines = st.cart.map((l) => {
     const gross = l.qty * l.price;
-    const net = gross * (1 - l.disc / 100) * (1 - st.orderDisc / 100);
-    return { ...l, gross, net: Math.round(net * 100) / 100 };
+    const afterLine = Math.round(gross * (1 - l.disc / 100) * 100) / 100;
+    const net = Math.round(gross * (1 - l.disc / 100) * (1 - orderPct / 100) * 100) / 100;
+    return { ...l, gross, afterLine, net };
   });
   const sub = lines.reduce((a, l) => a + l.gross, 0);
+  const lineDisc = lines.reduce((a, l) => a + (l.gross - l.afterLine), 0);
   const netSum = lines.reduce((a, l) => a + l.net, 0);
+  const orderDiscAmt = sub - lineDisc - netSum;
   const tax = Math.round(netSum * taxRate * 100) / 100;
+  const c = st.customer ? cust(Number(st.customer)) : null;
+
+  let promoBox = '';
+  if (!promo) promoBox = `<div class="promo prog"><span>🎁</span><span class="grow muted">Pick a customer to use the first-purchase wheel and the every-${setting('loyalty_every')}th-purchase ${num(setting('loyalty_pct'))}% reward.</span></div>`;
+  else if (promo.can_spin) promoBox = `<div class="promo spinbox"><span>🎡</span><span class="grow"><b>First purchase!</b> ${esc(c?.name)} gets a spin for 5–20% off.</span><button class="btn sm primary" id="pos-spin">Spin the wheel</button></div>`;
+  else if (promo.loyalty_next) promoBox = `<div class="promo loyal"><span>⭐</span><span class="grow"><b>Purchase #${promo.next_purchase}: ${num(promo.loyalty_pct)}% loyalty reward applied!</b></span>${loyaltyDots({ ...promo, purchases: promo.every - 1 })}</div>`;
+  else if (promo.first && promo.spin_pct) promoBox = `<div class="promo win"><span>🎉</span><span class="grow"><b>Wheel reward: ${num(promo.spin_pct)}% off</b> this first purchase (applied).</span></div>`;
+  else promoBox = `<div class="promo prog"><span>⭐</span><span class="grow">This is purchase <b>#${promo.next_purchase}</b> · purchase #${Math.ceil(promo.next_purchase / promo.every) * promo.every} gets ${num(promo.loyalty_pct)}% off</span>${loyaltyDots(promo)}</div>`;
 
   view.innerHTML = `
   <div class="pos">
@@ -50,7 +71,7 @@ export async function render(view) {
         <button class="btn blue" id="pos-cam">📷 Camera</button>
       </div>
       <div class="toolbar" style="margin-top:12px">
-        <div class="chips">${cats.map((c) => `<button class="chip ${c === st.cat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+        <div class="chips">${cats.map((x) => `<button class="chip ${x === st.cat ? 'on' : ''}" data-cat="${esc(x)}">${esc(x)}</button>`).join('')}</div>
         <input id="pos-search" class="grow" style="max-width:220px;margin:0" placeholder="Search…" value="${esc(st.search)}">
       </div>
       <div class="prod-grid">
@@ -67,7 +88,8 @@ export async function render(view) {
 
     <div class="card">
       <h3>Current sale <span class="r muted small">${esc(S.refs.locations.find((l) => l.id === st.loc)?.name || '')}</span></h3>
-      <div class="cart-line muted small" style="padding-top:0"><span>Item</span><span class="num">Price</span><span class="num">Qty</span><span class="num">Disc %</span><span></span></div>
+      ${promoBox}
+      <div class="cart-line muted small" style="padding-top:10px"><span>Item</span><span class="num">Price</span><span class="num">Qty</span><span class="num">Disc %</span><span></span></div>
       ${lines.length ? lines.map((l, ix) => `
         <div class="cart-line">
           <div><b>${esc(item(l.id).name)}</b><div class="muted small">${money(l.net)}${avail(item(l.id)) < l.qty ? ' · <span class="neg">only ' + avail(item(l.id)) + ' here</span>' : ''}</div></div>
@@ -82,10 +104,12 @@ export async function render(view) {
       </div>
       <div class="totals">
         <div><span>Subtotal</span><span>${money(sub)}</span></div>
-        <div><span>Discounts</span><span>−${money(sub - netSum)}</span></div>
+        ${lineDisc > 0 ? `<div><span>Line discounts</span><span>−${money(lineDisc)}</span></div>` : ''}
+        ${orderDiscAmt > 0.004 ? `<div><span>${promoWins ? `${promoName} (${num(promoPct)}%)` : `Order discount (${num(st.orderDisc)}%)`}</span><span>−${money(orderDiscAmt)}</span></div>` : ''}
         <div><span>Sales tax (${(taxRate * 100).toFixed(2)}%)</span><span>${money(tax)}</span></div>
         <div class="grand"><span>Total</span><span>${money(netSum + tax)}</span></div>
       </div>
+      ${promoWins && st.orderDisc > 0 ? `<p class="muted small">The ${promoName.toLowerCase()} is bigger than the ${num(st.orderDisc)}% order discount, so it replaces it (discounts don't stack).</p>` : ''}
       <div class="row2" style="margin-top:14px">
         <button class="btn ghost" id="pos-clear" ${lines.length ? '' : 'disabled'}>Clear</button>
         <button class="btn primary lg" id="pos-done" ${lines.length ? '' : 'disabled'}>Complete sale</button>
@@ -107,7 +131,8 @@ export async function render(view) {
   $('#pos-scan', view).focus();
   $('#pos-cam', view).onclick = () => cameraScan(add, { continuous: true });
   $('#pos-loc', view).onchange = (e) => { st.loc = Number(e.target.value); render(view); };
-  $('#pos-cust', view).onchange = (e) => { st.customer = e.target.value; };
+  $('#pos-cust', view).onchange = (e) => { st.customer = e.target.value; render(view); };
+  $('#pos-spin', view)?.addEventListener('click', () => spinWheel(Number(st.customer), c?.name, () => render(view)));
   $('#pos-pay', view).onchange = (e) => { st.pay = e.target.value; };
   $('#pos-odisc', view).onchange = (e) => { st.orderDisc = Math.min(100, Math.max(0, Number(e.target.value) || 0)); render(view); };
   $('#pos-search', view).oninput = (e) => {
@@ -121,7 +146,8 @@ export async function render(view) {
   view.querySelectorAll('[data-disc]').forEach((i) => (i.onchange = () => { st.cart[i.dataset.disc].disc = Math.min(100, Math.max(0, Number(i.value) || 0)); render(view); }));
   view.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => { st.cart.splice(Number(b.dataset.rm), 1); render(view); }));
   $('#pos-clear', view).onclick = () => { st.cart = []; st.orderDisc = 0; render(view); };
-  $('#pos-done', view).onclick = (e) =>
+  $('#pos-done', view).onclick = (e) => {
+    if (promo?.can_spin && !confirm(`${c?.name} hasn't spun the wheel yet. Complete the sale without the first-purchase spin?`)) return;
     act(e.currentTarget, async () => {
       const id = await rpc('post_sale', {
         p_location: st.loc, p_customer: st.customer ? Number(st.customer) : null,
@@ -132,12 +158,16 @@ export async function render(view) {
       await showReceipt(id);
       refresh();
     }).catch(() => {});
+  };
 }
 
 export async function showReceipt(saleId) {
   const [s] = await sel('sales', '*', (q) => q.eq('id', saleId));
   const lines = await sel('sale_lines', '*', (q) => q.eq('sale_id', saleId).order('id'));
   const l = S.refs.locations.find((x) => x.id === s.location_id);
+  const every = setting('loyalty_every'), lp = setting('loyalty_pct');
+  const until = s.purchase_no ? (every - ((s.purchase_no + 1) % every)) % every : null;
+  const rewardNo = s.purchase_no ? Math.ceil((s.purchase_no + 1) / every) * every : null;
   const html = `<div class="receipt">
     <div class="c"><b style="font-size:15px">SIX SIGMA SOCCER GOODS</b><br>${esc(l.name)}<br>${esc(l.address || '')}</div><hr>
     <div class="r"><span>Receipt ${docNo('S', s.id)}</span><span>${fdt(s.ts)}</span></div>
@@ -148,9 +178,11 @@ export async function showReceipt(saleId) {
     <hr>
     <div class="r"><span>Subtotal</span><span>${money(s.subtotal)}</span></div>
     <div class="r"><span>Discounts${Number(s.order_discount_pct) ? ` (incl. ${num(s.order_discount_pct)}% order)` : ''}</span><span>−${money(s.discount_total)}</span></div>
+    ${s.promo_type ? `<div class="r"><span>&nbsp; ${s.promo_type === 'wheel' ? '🎡 Wheel reward' : '⭐ Loyalty reward'} ${num(s.promo_pct)}%</span><span>−${money(s.promo_discount)}</span></div>` : ''}
     <div class="r"><span>Tax</span><span>${money(s.tax)}</span></div>
     <div class="r"><b>TOTAL</b><b>${money(s.total)}</b></div>
     <div class="r"><span>Paid by</span><span>${esc(s.payment_method)}</span></div><hr>
+    ${s.purchase_no ? `<div class="c">Purchase #${s.purchase_no} · ${until === 0 ? `<b>your NEXT purchase is ${num(lp)}% off!</b>` : `purchase #${rewardNo} gets ${num(lp)}% off`}</div><hr>` : ''}
     <div class="c"><svg id="rcpt-bc"></svg><br><small>Returns within 30 days with receipt.<br>Thank you — see you on the pitch! ⚽</small></div>
   </div>`;
   const m = modal({ title: `Receipt ${docNo('S', s.id)}`, body: html, okText: '🖨 Print', onOk: () => { printDoc(`Receipt S-${s.id}`, m.el.querySelector('.receipt').outerHTML); return false; } });

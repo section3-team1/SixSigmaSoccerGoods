@@ -32,6 +32,7 @@ export async function render(view) {
       <tr><td>Process a return</td><td>Reverses revenue at the net price paid and reverses COGS at the original cost. Quality-failure reasons go to <b>QC Hold</b> and the Pareto</td></tr>
       <tr><td>Send a PO</td><td>Stamps the order date and <b>expected date = order date + supplier quoted lead time</b>. The open quantity counts as on order and as an MRP scheduled receipt</td></tr>
       <tr><td>Receive a PO</td><td>Increases inventory, re-averages item cost, sets the bill due date from payment terms, and scores on-time, actual lead time and fill rate</td></tr>
+      <tr><td>Sell to a named customer</td><td>Counts their purchases. The <b>first purchase</b> gets a database-drawn spin of the wheel (5/5/10/10/15/20% off), and <b>every 6th purchase</b> gets 30% off automatically. The discount flows through the receipt, the P&amp;L, returns and the <b>Promotions report</b> (cost vs. repeat visits)</td></tr>
       <tr><td>Change a setting (S, H, z, tax, opex)</td><td>EOQ, ROP, safety stock, P&amp;L and scorecards recalculate immediately</td></tr>
     </tbody></table></div>
   </div>
